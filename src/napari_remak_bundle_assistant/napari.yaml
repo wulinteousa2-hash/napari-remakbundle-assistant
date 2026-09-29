@@ -1,0 +1,13 @@
+name: napari-remak-bundle-assistant
+display_name: napari-remak-bundle-assistant
+visibility: public
+
+contributions:
+  commands:
+    - id: napari-remak-bundle-assistant.distance
+      title: "Remak–Nerve Distance"
+      python_name: napari_remak_bundle_assistant.remak_distance.widget:RemakDistanceWidget
+
+  widgets:
+    - command: napari-remak-bundle-assistant.distance
+      display_name: "Remak–Nerve Distance"
