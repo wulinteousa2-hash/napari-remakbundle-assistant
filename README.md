@@ -28,6 +28,45 @@ the Remak Labels grid, so matching layer scale and translation manually is not
 required. It remains vector geometry: automatic measurement does not rasterize
 it. The plugin never modifies the source image or segmentation layers.
 
+## How the automatic measurement works
+
+The automatic measurement uses the geometric center of each segmented Remak
+bundle and the nearest location on the traced outer nerve boundary:
+
+```text
+segmented Remak bundle                         outer nerve boundary
+      █████                                               /
+    ███ ● ███  ───────── shortest distance ────────────  ×
+      █████                                             /
+          centroid                         nearest boundary point
+```
+
+1. **Identify each bundle.** Pixels with the same label that share an edge are
+   treated as one connected component. Separate regions are measured
+   independently, even if they happen to have the same label value.
+2. **Calculate the centroid.** Every pixel in the component is given equal
+   weight. The software averages all pixel-center Y coordinates and all
+   pixel-center X coordinates. The resulting point is the bundle's centroid,
+   or geometric center. For a strongly curved or concave bundle, this point
+   can fall outside the labeled pixels; this is a normal property of a
+   centroid.
+3. **Represent the nerve outline as a vector boundary.** Polygon and rectangle
+   vertices are joined by straight segments. An ellipse is represented by a
+   finely sampled closed curve. The outline remains continuous vector geometry
+   rather than being converted into a pixel-thick boundary.
+4. **Find the nearest boundary point.** The centroid is projected onto every
+   boundary segment. A projection that would fall beyond a segment is limited
+   to that segment's endpoint. The candidate with the smallest distance is
+   selected as the nearest point on the nerve boundary.
+5. **Apply the image calibration.** Pixel size in Y and X is applied before
+   comparing distances. This makes the result physically correct when pixels
+   are not square. The result table reports the calibrated distance, and the
+   optional QC line displays the exact centroid-to-boundary measurement.
+
+This is a **centroid-to-boundary** measurement, not a measurement from the
+edge of the Remak bundle. The same rule is applied consistently to every
+component, making results reproducible across an image set.
+
 ## Workflow
 
 1. Start napari and open **Plugins → napari-remak-bundle-assistant →
@@ -65,7 +104,7 @@ Each pair produces a cyan QC line and a table row containing the Remak ID,
 pixel and calibrated physical distance, and both endpoint coordinates. The
 reference image is not an analysis input in this mode.
 
-## Measurement definition
+## Technical measurement definition
 
 For a Remak bundle \(R\), its centroid \(c_R\), and the vector outer nerve
 boundary \(\partial N\):
