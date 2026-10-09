@@ -25,8 +25,11 @@ from qtpy.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
+    QLayout,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -38,6 +41,10 @@ from .measurements import (
     RemakMeasurement,
     measure_centroids_to_shapes_boundary,
 )
+from .radial import measure_radial_distances, measure_radial_shapes
+from .analysis import AnalysisWidget
+
+_RADIAL_LINES_NAME = "Remak Radial Lines (AB orange, BC₂ magenta)"
 
 _LINES_NAME = "Remak Centroid–Nerve Boundary Lines"
 _POINTS_NAME = "Remak Centroid–Nerve Boundary Points"
@@ -84,6 +91,7 @@ class _MeasurementWorker(QObject):
         scale: tuple[float, float],
         *,
         include_normalized_distance: bool,
+        radial_mask: Any | None = None,
     ) -> None:
         super().__init__()
         self._labels = labels
@@ -91,6 +99,7 @@ class _MeasurementWorker(QObject):
         self._scale = scale
         self._include_normalized_distance = include_normalized_distance
         self._cancel_event = Event()
+        self._radial_mask = radial_mask
 
     def cancel(self) -> None:
         """Request cancellation at the next safe checkpoint."""
@@ -108,6 +117,16 @@ class _MeasurementWorker(QObject):
                 progress_callback=self.progress.emit,
                 is_cancelled=self._cancel_event.is_set,
             )
+            if self._radial_mask is not None:
+                if isinstance(self._radial_mask, _ShapesBoundarySource):
+                    result = measure_radial_shapes(
+                        result, self._radial_mask.data, self._radial_mask.shape_types,
+                        is_cancelled=self._cancel_event.is_set,
+                    )
+                else:
+                    result = measure_radial_distances(
+                        result, self._radial_mask, is_cancelled=self._cancel_event.is_set
+                    )
         except MeasurementCancelledError:
             self.cancelled.emit()
         except Exception as error:  # Relay worker failures safely to the UI thread.
@@ -159,7 +178,15 @@ class RemakDistanceWidget(QWidget):
         self.refresh_layers()
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        self.panel_scroll = QScrollArea()
+        self.panel_scroll.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        self.panel_scroll.setWidget(content)
+        outer_layout.addWidget(self.panel_scroll)
 
         introduction = QLabel(
             "Measure each curated Remak bundle centroid to the closest point on "
@@ -189,6 +216,12 @@ class RemakDistanceWidget(QWidget):
         form.addRow("Reference image (optional)", self.image_combo)
         form.addRow("Remak bundle labels", self.remak_combo)
         form.addRow("Nerve boundary (Shapes)", self.nerve_combo)
+        self.radial_mask_combo = QComboBox()
+        self.radial_mask_combo.setToolTip(
+            "Choose the existing nerve Shapes boundary or a nerve Labels mask. "
+            "Leave empty to reuse the selected Nerve boundary (Shapes)."
+        )
+        form.addRow("Radial nerve region (Shapes / Labels)", self.radial_mask_combo)
 
         label_rule = QLabel(
             "Each disconnected 4-connected region is measured separately, even "
@@ -215,6 +248,11 @@ class RemakDistanceWidget(QWidget):
         option_layout.addWidget(self.lines_check)
         option_layout.addWidget(self.points_check)
         option_layout.addWidget(self.normalized_check)
+        self.radial_check = QCheckBox("Radial Distance Analysis")
+        self.radial_check.setToolTip(
+            "Reuse B; calculate nerve centroid A and the outward A–B–C₂ ray."
+        )
+        option_layout.addWidget(self.radial_check)
         self.manual_group = QGroupBox("Manual label-to-boundary measurement")
         manual_layout = QVBoxLayout(self.manual_group)
         manual_note = QLabel(
@@ -369,7 +407,35 @@ class RemakDistanceWidget(QWidget):
         self.table.setToolTip(
             "Sort by any column. Double-click a row to center that Remak bundle."
         )
-        layout.addWidget(self.table, 1)
+        self.results_tabs = QTabWidget()
+        self.results_tabs.setMinimumHeight(450)
+        self.analysis = AnalysisWidget()
+        self.results_tabs.addTab(self.table, "Measurements")
+        self.results_tabs.addTab(self.analysis, "Analysis")
+        self.results_tabs.currentChanged.connect(self._analysis_tab_changed)
+        layout.addWidget(self.results_tabs, 1)
+
+    def _analysis_tab_changed(self, index: int) -> None:
+        if index == 1 and self.analysis.dirty:
+            self.analysis.render()
+
+    def _refresh_analysis(self) -> None:
+        image = self._selected_layer(self.image_combo)
+        remak = self._selected_layer(self.remak_combo)
+        title = image.name if image is not None else (remak.name if remak is not None else "Image")
+        if self._result is not None:
+            self.analysis.set_results(
+                [item.min_distance_physical for item in self._result.measurements],
+                [f"{item.remak_id}.{item.component_index} (#{item.measurement_id or i+1})"
+                 for i, item in enumerate(self._result.measurements)],
+                self._result.radial_records, unit=self._measurement_unit(), title=title,
+            )
+        else:
+            self.analysis.set_results(
+                [item.distance_physical for item in self._manual_measurements],
+                [f"{item.remak_id} (#{item.measurement_id})" for item in self._manual_measurements],
+                unit=self._measurement_unit(), title=title, manual=True,
+            )
 
     def _connect_layer_events(self) -> None:
         for event_name in ("inserted", "removed", "reordered"):
@@ -414,6 +480,7 @@ class RemakDistanceWidget(QWidget):
         roi_layers = [layer for layer in layers if isinstance(layer, Shapes)]
         self._restore_combo(self.remak_combo, label_layers)
         self._restore_combo(self.nerve_combo, roi_layers)
+        self._restore_combo(self.radial_mask_combo, roi_layers + label_layers, optional=True)
         self._update_calibration_text()
 
     def _update_calibration_text(self) -> None:
@@ -457,6 +524,8 @@ class RemakDistanceWidget(QWidget):
             return
         if self._manual_points_layer is not None:
             self._manual_points_changed()
+            if not self.manual_finish_button.isEnabled():
+                self._refresh_analysis()
             self.status_label.setText(
                 "Pixel calibration applied; manual physical distances updated."
             )
@@ -539,6 +608,28 @@ class RemakDistanceWidget(QWidget):
             if len(labels.shape) != 2:
                 raise MeasurementValidationError("The Remak Labels layer must be 2D.")
             nerve_boundary = self._nerve_boundary(nerve, remak)
+            radial_mask = None
+            if self.radial_check.isChecked():
+                mask_layer = self._selected_layer(self.radial_mask_combo)
+                if mask_layer is None:
+                    mask_layer = nerve
+                if isinstance(mask_layer, Shapes):
+                    radial_mask = self._nerve_boundary(mask_layer, remak)
+                elif mask_layer is remak:
+                    raise MeasurementValidationError(
+                        "Choose a separate nerve segmentation Labels layer for radial analysis."
+                    )
+                elif tuple(mask_layer.data.shape) != tuple(labels.shape):
+                    raise MeasurementValidationError("Nerve and Remak masks must share a 2D grid.")
+                # Compare full transforms, including rotation and shear.
+                for point in (() if isinstance(mask_layer, Shapes) else ((0, 0), (1, 0), (0, 1))):
+                    if not np.allclose(mask_layer.data_to_world(point),
+                                       remak.data_to_world(point)):
+                        raise MeasurementValidationError(
+                            "Nerve and Remak mask layer transforms must match."
+                        )
+                if not isinstance(mask_layer, Shapes):
+                    radial_mask = np.array(mask_layer.data, copy=True) > 0
         except (MeasurementValidationError, MemoryError, ValueError) as error:
             self.measure_button.setEnabled(True)
             self._show_error(str(error))
@@ -563,6 +654,7 @@ class RemakDistanceWidget(QWidget):
             nerve_boundary,
             self._measurement_scale(),
             include_normalized_distance=self.normalized_check.isChecked(),
+            radial_mask=radial_mask,
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -791,6 +883,8 @@ class RemakDistanceWidget(QWidget):
         return best_point
 
     def _populate_manual_table(self) -> None:
+        # Edits invalidate a previously finished session's analysis snapshot.
+        self.analysis.set_results()
         unit = self._measurement_unit()
         headers = [
             "Measurement",
@@ -883,6 +977,7 @@ class RemakDistanceWidget(QWidget):
             "measurement(s)."
         )
         self.status_label.setText(self.manual_instruction.text())
+        self._refresh_analysis()
 
     @Slot(int, int, str)
     def _measurement_progressed(
@@ -906,6 +1001,7 @@ class RemakDistanceWidget(QWidget):
                 "Step 7 of 7 — Populating the table and QC layers …",
             )
             self._populate_table(result)
+            self._refresh_analysis()
             remak = self._selected_layer(self.remak_combo)
             if remak is not None:
                 self._update_qc_layers(remak, result)
@@ -976,6 +1072,9 @@ class RemakDistanceWidget(QWidget):
         ]
         if include_normalized:
             headers.append("Normalized distance")
+        if result.radial_records:
+            headers.extend([f"Radial AB ({unit})", f"Radial BC₂ ({unit})",
+                            f"Radial AC₂ ({unit})", "Radial AB/AC₂", "Radial status"])
 
         self.table.setSortingEnabled(False)
         self.table.clear()
@@ -1006,6 +1105,16 @@ class RemakDistanceWidget(QWidget):
                 table_item.setData(Qt.ItemDataRole.UserRole + 1, measurement_id)
                 self.table.setItem(row, column, table_item)
             self._row_measurements[item.measurement_id or row + 1] = item
+            if result.radial_records:
+                radial = result.radial_records[row]
+                for offset, key in enumerate(("radial_ab_physical", "radial_bc_physical",
+                                              "radial_ac_physical", "radial_normalized_position",
+                                              "radial_status")):
+                    value = radial[key]
+                    cell = (_NumericItem(value) if isinstance(value, (int, float))
+                            else QTableWidgetItem("" if value is None else str(value)))
+                    cell.setData(Qt.ItemDataRole.UserRole + 1, item.measurement_id or row + 1)
+                    self.table.setItem(row, len(headers) - 5 + offset, cell)
 
         self.table.resizeColumnsToContents()
         self.table.setSortingEnabled(True)
@@ -1023,6 +1132,7 @@ class RemakDistanceWidget(QWidget):
 
     def _remove_qc_layers(self) -> None:
         reserved_names = (
+            _RADIAL_LINES_NAME,
             _LINES_NAME,
             _POINTS_NAME,
             _LEGACY_LINES_NAME,
@@ -1045,6 +1155,26 @@ class RemakDistanceWidget(QWidget):
 
     def _update_qc_layers(self, remak: Any, result: MeasurementResult) -> None:
         self._remove_qc_layers()
+        radial_lines, colors, ids, segments = [], [], [], []
+        for item, radial in zip(result.measurements, result.radial_records):
+            if radial["radial_status"] != "valid":
+                continue
+            a = [radial["nerve_centroid_y"], radial["nerve_centroid_x"]]
+            b = [item.remak_centroid_y, item.remak_centroid_x]
+            c = [radial["radial_boundary_y"], radial["radial_boundary_x"]]
+            radial_lines.extend([np.array([a, b]), np.array([b, c])])
+            colors.extend(["orange", "magenta"])
+            ids.extend([item.measurement_id, item.measurement_id])
+            segments.extend(["AB", "BC2"])
+        if radial_lines:
+            layer = self.viewer.add_shapes(
+                radial_lines, shape_type="line", name=_RADIAL_LINES_NAME,
+                edge_color=colors, edge_width=2,
+                features={"measurement_id": ids, "segment": segments},
+                metadata={_QC_ROLE: True},
+                scale=remak.scale, translate=remak.translate,
+                rotate=remak.rotate, shear=remak.shear, affine=remak.affine,
+            )
         scale = tuple(float(value) for value in remak.scale[-2:])
         translate = tuple(float(value) for value in remak.translate[-2:])
 
@@ -1122,6 +1252,7 @@ class RemakDistanceWidget(QWidget):
         self._result = None
         self._row_measurements.clear()
         self._manual_measurements.clear()
+        self.analysis.set_results()
         self.table.clearContents()
         self.table.setRowCount(0)
         self.export_button.setEnabled(False)
@@ -1221,6 +1352,8 @@ class RemakDistanceWidget(QWidget):
                 {**common, **item.as_record()}
                 for item in self._result.measurements
             ]
+            for row, radial in zip(rows, self._result.radial_records):
+                row.update(radial)
         if not rows:
             self._show_error("There are no measurements to export.")
             return

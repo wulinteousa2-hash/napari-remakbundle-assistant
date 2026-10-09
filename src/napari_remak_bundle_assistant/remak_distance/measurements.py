@@ -58,6 +58,7 @@ class MeasurementResult:
     nerve_area_physical: float
     pixel_size_y: float
     pixel_size_x: float
+    radial_records: tuple[dict[str, Any], ...] = ()
 
     def as_records(self) -> list[dict[str, Any]]:
         """Return one dictionary per Remak bundle."""

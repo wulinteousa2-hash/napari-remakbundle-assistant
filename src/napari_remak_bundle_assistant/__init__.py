@@ -3,4 +3,4 @@
 from .remak_distance.widget import RemakDistanceWidget
 
 __all__ = ("RemakDistanceWidget",)
-__version__ = "1.0.0"
+__version__ = "1.0.1"

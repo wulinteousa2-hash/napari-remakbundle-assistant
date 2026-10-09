@@ -12,6 +12,93 @@ from napari_remak_bundle_assistant.remak_distance.widget import (  # noqa: E402
 )
 
 
+def test_small_panel_scrolls_to_analysis(make_napari_viewer, qtbot):
+    from qtpy.QtCore import QPoint
+
+    widget = RemakDistanceWidget(make_napari_viewer())
+    qtbot.addWidget(widget)
+    widget.resize(800, 500)
+    widget.show()
+    widget.analysis.set_results([1, 2, 3], ["1", "2", "3"], unit="µm")
+    widget.results_tabs.setCurrentIndex(1)
+    bar = widget.panel_scroll.verticalScrollBar()
+    qtbot.waitUntil(lambda: bar.maximum() > 0)
+    bar.setValue(bar.maximum())
+    qtbot.waitUntil(lambda: bar.value() == bar.maximum())
+    bottom = widget.results_tabs.mapTo(widget.panel_scroll.viewport(),
+                                      QPoint(0, widget.results_tabs.height()))
+    assert bottom.y() <= widget.panel_scroll.viewport().height()
+    assert widget.analysis.canvas is not None
+    assert widget.minimumSizeHint().height() < 500
+
+
+def test_radial_gui_lines_csv_and_unchanged_shortest(
+    make_napari_viewer, qtbot, monkeypatch, tmp_path
+):
+    import csv
+    from qtpy.QtWidgets import QFileDialog
+    from napari_remak_bundle_assistant.remak_distance.widget import _RADIAL_LINES_NAME
+
+    viewer = make_napari_viewer()
+    labels = np.zeros((21, 21), dtype=np.uint8)
+    labels[10, 14] = 7
+    remak = viewer.add_labels(labels)
+    mask = viewer.add_labels(np.ones((21, 21), dtype=np.uint8))
+    nerve = viewer.add_shapes(
+        [np.array([[0, 0], [0, 20], [20, 20], [20, 0]])], shape_type="polygon"
+    )
+    widget = RemakDistanceWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.remak_combo.setCurrentIndex(widget.remak_combo.findData(remak))
+    widget.nerve_combo.setCurrentIndex(widget.nerve_combo.findData(nerve))
+    widget.measure()
+    qtbot.waitUntil(lambda: widget._measurement_thread is None, timeout=5000)
+    original = widget._result.measurements
+    widget.radial_mask_combo.setCurrentIndex(widget.radial_mask_combo.findData(mask))
+    widget.radial_check.setChecked(True)
+    widget.pixel_size_y.setValue(2)
+    widget.pixel_size_x.setValue(2)
+    widget.pixel_unit_edit.setText("µm")
+    widget.measure()
+    qtbot.waitUntil(lambda: widget._measurement_thread is None, timeout=5000)
+    assert widget._result.measurements[0].min_distance_px == original[0].min_distance_px
+    r = widget._result.radial_records[0]
+    assert r["radial_ab_physical"] == pytest.approx(8)
+    assert r["radial_bc_physical"] == pytest.approx(13)
+    layer = viewer.layers[_RADIAL_LINES_NAME]
+    assert len(layer.data) == 2
+    np.testing.assert_allclose(layer.data[0], [[10, 10], [10, 14]])
+    np.testing.assert_allclose(layer.data[1], [[10, 14], [10, 20.5]])
+    assert not np.allclose(layer.edge_color[0], layer.edge_color[1])
+    assert "Remak Centroid–Nerve Boundary Lines" in viewer.layers
+    assert len(widget.analysis.distances) == len(widget._result.measurements)
+    path = tmp_path / "radial.csv"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args: (str(path), ""))
+    widget.export_csv()
+    with path.open() as stream:
+        row = next(csv.DictReader(stream))
+    assert float(row["min_distance_physical"]) == pytest.approx(12)
+    assert float(row["radial_bc_physical"]) == pytest.approx(13)
+    assert row["radial_status"] == "valid"
+    assert row["physical_unit"] == "µm"
+    widget.radial_check.setChecked(False)
+    widget.measure()
+    qtbot.waitUntil(lambda: widget._measurement_thread is None, timeout=5000)
+    assert not widget._result.radial_records
+    assert _RADIAL_LINES_NAME not in viewer.layers
+    # Shapes are available explicitly and are also the default radial source.
+    assert widget.radial_mask_combo.findData(nerve) >= 0
+    widget.radial_mask_combo.setCurrentIndex(0)
+    widget.radial_check.setChecked(True)
+    widget.measure()
+    qtbot.waitUntil(lambda: widget._measurement_thread is None, timeout=5000)
+    r = widget._result.radial_records[0]
+    assert r["radial_boundary_x"] == pytest.approx(20)
+    assert r["radial_bc_physical"] == pytest.approx(12)
+    np.testing.assert_allclose(viewer.layers[_RADIAL_LINES_NAME].data[1],
+                               [[10, 14], [10, 20]])
+
+
 def test_widget_measures_shapes_boundary_and_creates_exact_line(
     make_napari_viewer, qtbot
 ) -> None:
@@ -224,6 +311,13 @@ def test_manual_point_pair_creates_line_and_table_record(
     assert widget.export_button.isEnabled()
     assert viewer.layers.selection.active is widget._manual_points_layer
     assert widget._manual_points_layer.mode == "add"
+
+    widget.finish_manual_measurement()
+    assert len(widget.analysis.distances) == 1
+    assert widget.analysis.distances[0] == pytest.approx(item.distance_physical)
+    assert "Manual point-pair" in widget.analysis.summary.text()
+    widget.start_manual_measurement()
+    widget._manual_points_layer.data = np.asarray([[2.0, 2.0], [5.0, 6.0]])
 
     widget._manual_points_layer.data = np.vstack(
         [widget._manual_points_layer.data, [[6.0, 2.0], [8.0, 5.0]]]

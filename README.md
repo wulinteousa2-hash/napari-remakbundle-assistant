@@ -69,6 +69,54 @@ component, making results reproducible across an image set.
 
 ## Workflow
 
+### Per-image analysis
+
+After **Run automatic measurement** completes or **Finish manual session** is
+clicked, open the **Analysis** tab beside **Measurements**. It shows the number
+of observations, median, quartiles, interquartile range, and minimum–maximum.
+Choose a distance histogram or a sorted bar chart identifying each bundle and
+measurement. With valid radial results, normalized radial position and
+shortest-versus-radial distance charts are also available. Invalid radial rows
+are counted and excluded from radial charts; their existing shortest distances
+remain in the distance summary.
+
+Charts use the completed result rows, without reading image pixels or creating
+napari layers. The plotting canvas is created when Analysis is first opened.
+For large tables the bar chart displays the 60 longest distances; statistics
+and histogram counts include all measurements. Histogram tick marks are limited
+to 2,000 ordered observations. Manual observations are identified as a possible
+selected subset, and summaries make no claims about biological significance.
+**Save chart** exports the current plot as PNG, PDF, or SVG. New measurements
+replace the previous analysis; clearing results clears the analysis too.
+
+### Optional Radial Distance Analysis
+
+Enable **Radial Distance Analysis**. By default it reuses the selected
+**Nerve boundary (Shapes)**; no painting or extra mask is needed. The
+**Radial nerve region (Shapes / Labels)** selector also accepts an explicit
+Shapes layer or a nerve segmentation Labels layer. For Shapes, A is the
+centroid of the enclosed area, and C₂ lies on the vector boundary. One closed
+nerve shape is required; ellipses use the existing sampled vector outline.
+For Labels, the layer must share the Remak grid and transform, and all positive
+pixels define the nerve. The existing shortest B–C₁ analysis stays unchanged.
+
+A is the nerve region centroid; B is reused from the existing bundle measurement.
+C₂ is the first outward intersection beyond B on the straight A→B ray. The
+independent radial Shapes layer shows AB in orange and BC₂ in magenta. Distances
+use the existing Y/X calibration; enter pixel sizes in µm and set Unit to µm
+for micrometer output. The table and CSV add AB, BC₂, AC₂, and AB/AC₂. CSV names
+are `radial_ab_physical`, `radial_bc_physical`, `radial_ac_physical`, and
+`radial_normalized_position`, with centroid/intersection coordinates and
+`radial_status`. Existing columns retain their names and meanings.
+
+For Labels inputs, the mask boundary follows pixel-cell edges, half a pixel from pixel centers.
+Every grid-crossing interval is checked: A–B must stay inside the actual nerve
+mask. Internal holes are filled only when finding the outer boundary C₂.
+Concave boundaries use the first exit beyond B, even if the ray later reenters.
+Invalid paths, centroids outside the nerve, and coincident A/B are flagged;
+their radial distances are blank and no radial lines are drawn. This mask
+boundary can differ slightly from the independently traced Shapes boundary C₁.
+
 1. Start napari and open **Plugins → napari-remak-bundle-assistant →
    Remak–Nerve Distance**.
 2. Choose the reference image, Remak bundle labels, and nerve ROI.
