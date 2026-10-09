@@ -1,8 +1,14 @@
 # napari-remak-bundle-assistant
 
+**Version 1.0.1** · [Changelog](CHANGELOG.md)
+
 Research-oriented napari tools for measuring the distance from each curated
 Remak bundle's **centroid** to the nearest point on the vector outer boundary
 of a peripheral nerve cross-section.
+
+Optional radial analysis measures along the nerve-center-to-bundle direction.
+The **Analysis** tab provides per-image summaries and charts, with PNG, PDF,
+and SVG export. The whole plugin panel and long bar charts are scrollable.
 
 The plugin supports both automatic component-centroid analysis and a
 lightweight manual workflow. Automatic analysis gives every disconnected
@@ -69,6 +75,20 @@ component, making results reproducible across an image set.
 
 ## Workflow
 
+1. Start napari and open **Plugins → napari-remak-bundle-assistant →
+   Remak–Nerve Distance**.
+2. Choose the reference image, Remak bundle labels, and nerve ROI.
+3. Confirm or edit **Pixel size Y**, **Pixel size X**, and **Unit**. These are
+   initialized from the Labels layer but do not modify that source layer.
+4. Select optional normalized measurements, radial analysis, and visual outputs.
+5. Click **Run automatic measurement**.
+6. Sort the **Measurements** table or double-click a row to locate a bundle.
+7. Open **Analysis** to see summaries and charts; use **Save chart** to export.
+8. Click **Export CSV** for downstream analysis in Python, R, Prism, or Excel.
+
+Scroll the plugin panel to reach controls and results in a short window. Long
+bar charts have their own scrollbar so all displayed bundle labels remain accessible.
+
 ### Per-image analysis
 
 After **Run automatic measurement** completes or **Finish manual session** is
@@ -109,24 +129,26 @@ are `radial_ab_physical`, `radial_bc_physical`, `radial_ac_physical`, and
 `radial_normalized_position`, with centroid/intersection coordinates and
 `radial_status`. Existing columns retain their names and meanings.
 
-For Labels inputs, the mask boundary follows pixel-cell edges, half a pixel from pixel centers.
+Normalized radial position is **AB/AC₂**: 0 represents the nerve center and 1
+represents the boundary. The complementary ratio BC₂/AC₂ equals 1 − AB/AC₂.
+This radial position differs from the existing optional normalized shortest
+distance, which is preserved unchanged.
+
+With a Shapes source, A is calculated from polygon area, not by averaging
+boundary vertices. C₂ is found by ray–segment intersection, not nearest-point
+search. Radial calculations run in the background directly on the vector
+boundary, without creating a Labels layer or allocating a full-image nerve
+mask. Their cost depends on boundary vertices and bundle count. The Remak
+Labels source is still scanned in row chunks to obtain B.
+
+For Labels inputs, the mask boundary follows pixel-cell edges, half a pixel
+from pixel centers.
 Every grid-crossing interval is checked: A–B must stay inside the actual nerve
 mask. Internal holes are filled only when finding the outer boundary C₂.
 Concave boundaries use the first exit beyond B, even if the ray later reenters.
 Invalid paths, centroids outside the nerve, and coincident A/B are flagged;
 their radial distances are blank and no radial lines are drawn. This mask
 boundary can differ slightly from the independently traced Shapes boundary C₁.
-
-1. Start napari and open **Plugins → napari-remak-bundle-assistant →
-   Remak–Nerve Distance**.
-2. Choose the reference image, Remak bundle labels, and nerve ROI.
-3. Confirm or edit **Pixel size Y**, **Pixel size X**, and **Unit**. These are
-   initialized from the Labels layer but do not modify that source layer.
-4. Select optional normalized measurements and visual QC outputs.
-5. Click **Run automatic measurement**.
-6. Sort the results by any table column. Double-click a row to center that
-   bundle in the viewer.
-7. Click **Export CSV** for downstream analysis in Python, R, Prism, or Excel.
 
 Use **Apply / update results** after changing the calibration. Existing
 automatic results are recalculated because anisotropic pixel sizes can change
@@ -192,7 +214,8 @@ coordinates.
 ## Installation for development
 
 ```bash
-cd /home/wteox/Projects/napari/napari-remakbundle-assistant
+git clone https://github.com/wulinteousa2-hash/napari-remakbundle-assistant.git
+cd napari-remakbundle-assistant
 python -m pip install -e '.[test]'
 pytest
 ```
@@ -202,9 +225,14 @@ pytest
 ```text
 src/napari_remak_bundle_assistant/remak_distance/
 ├── measurements.py   # napari-independent scientific engine
-└── widget.py         # layer selection, table, QC layers, CSV export
+├── radial.py         # independent mask and vector radial calculations
+├── analysis.py       # descriptive summaries, charts, figure export
+└── widget.py         # scrollable GUI, table, QC layers, CSV export
 tests/
-└── test_measurements.py
+├── test_measurements.py
+├── test_radial.py
+├── test_analysis.py
+└── test_widget.py
 ```
 
 ## License
